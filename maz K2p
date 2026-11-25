@@ -1,153 +1,138 @@
-name: Build Padavan K2P Universal OpenVPN
+name: Build K2P Padavan Mercusys Multi-OVPN MAC
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main, master ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Build Dependencies
+      - name: Install Dependencies
         run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update -y
-          sudo apt-get install -y unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
-            fakeroot kmod cpio git python3-docutils gettext automake autopoint \
-            texinfo build-essential help2man pkg-config zlib1g-dev libgmp3-dev \
-            libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc6:i386 libstdc++6:i386 jq
+          sudo apt-get update
+          sudo apt-get install -y unzip libtool-bin curl cmake gperf gawk flex bison nano xxd fakeroot cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget
 
-      - name: Find Active Padavan Repo & Clone
+      - name: Clone Source
         run: |
-          REPO_URL=$(curl -s "https://github.com" | jq -r '.items[] | select(.size > 50000) | .clone_url' | head -n 1)
-          echo "Found active repo: $REPO_URL"
-          git clone --depth=1 "$REPO_URL" "$GITHUB_WORKSPACE/rt-n56u"
-          cd "$GITHUB_WORKSPACE/rt-n56u/toolchain-mipsel"
-          ./dl_toolchain.sh
+          H="github.com"
+          P="hanwckf/rt-n56u.git"
+          git clone --depth=1 "https://${H}/${P}" padavan
 
-      - name: Configure K2P with Full OpenVPN Support
+      - name: Inject Mercusys Multi-OVPN and MAC Routing UI
         run: |
-          cd "$GITHUB_WORKSPACE/rt-n56u/trunk"
-          K2P_CFG=$(find configs/templates -iname "*K2P*.config" | head -n 1)
-          echo "Using template: $K2P_CFG"
-          cp -f "$K2P_CFG" .config
-          sed -i 's/#CONFIG_FIRMWARE_INCLUDE_OPENVPN=y/CONFIG_FIRMWARE_INCLUDE_OPENVPN=y/g' .config
-          grep -q "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" .config || echo "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" >> .config
-          grep -q "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y" .config || echo "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y" >> .config
+          cat << 'EOF' > make_mercusys_ui.py
+          import glob
 
-      - name: Inject Universal OVPN Importer into vpncli.asp
-        run: |
-          VPN_FILE=$(find "$GITHUB_WORKSPACE/rt-n56u/trunk/user/www" -name "vpncli.asp" | head -n 1)
-          echo "Target VPN File: $VPN_FILE"
+          html = """<div id="tp_card" style="background:#fff;border-radius:10px;box-shadow:0 4px 14px rgba(0,0,0,0.1);border:1px solid #cbd5e1;padding:18px;margin:10px 0;font-family:Arial,sans-serif;color:#1e293b;">
+          <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #e2e8f0;padding-bottom:10px;margin-bottom:14px;">
+          <b style="font-size:17px;color:#00a896;">OpenVPN Client (Multi-Profile & MAC Control)</b>
+          <span id="tp_badge" style="padding:4px 14px;border-radius:15px;font-size:12px;font-weight:bold;color:#fff;background:#ef4444;">Disconnected</span></div>
 
-          cat << 'EOF' > /tmp/ovpn_ui.html
-          <div style="background:#f5f5f5;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px;">
-            <b>Import OpenVPN Profile (.ovpn - Modern & Legacy): </b>
-            <input type="file" accept=".ovpn,.conf" onchange="importOVPN(this)">
-            <span id="ov_msg" style="color:green;font-weight:bold;margin-left:10px;"></span>
-          </div>
+          <div style="margin-bottom:12px;"><b>1. Add .ovpn Profile: </b>
+          <label style="background:#f0fdfa;border:1.5px dashed #00a896;color:#00897b;padding:7px 14px;border-radius:6px;cursor:pointer;font-weight:bold;display:inline-block;">+ Import .ovpn File
+          <input type="file" accept=".ovpn,.conf,.txt" onchange="addOvpnProfile(this)" style="display:none;"></label>
+          <span id="tp_msg" style="margin-left:8px;font-weight:bold;color:#00897b;font-size:12px;"></span></div>
+
+          <div style="margin-bottom:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px;">
+          <b style="font-size:13px;color:#334155;">Saved VPN Profiles List:</b>
+          <div id="tp_profiles_list" style="margin-top:8px;"></div></div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+          <div><b>Server: </b><input type="text" id="tp_srv" style="padding:6px;border:1px solid #cbd5e1;border-radius:5px;width:180px;" oninput="if(document.form.vpnc_peer)document.form.vpnc_peer.value=this.value;"></div>
+          <div><b>Username: </b><input type="text" id="tp_usr" style="padding:6px;border:1px solid #cbd5e1;border-radius:5px;width:140px;" oninput="if(document.form.vpnc_user)document.form.vpnc_user.value=this.value;"></div>
+          <div><b>Password: </b><input type="password" id="tp_pwd" style="padding:6px;border:1px solid #cbd5e1;border-radius:5px;width:140px;" oninput="if(document.form.vpnc_pass)document.form.vpnc_pass.value=this.value;"></div></div>
+
+          <div style="margin-bottom:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:10px;">
+          <b style="font-size:13px;color:#92400e;">2. Allowed Devices via VPN (MAC Address List):</b><br>
+          <span style="font-size:11px;color:#78350f;">Enter MAC addresses separated by comma (e.g. AA:BB:CC:11:22:33). Leave empty for ALL devices.</span><br>
+          <input type="text" id="tp_macs" placeholder="AA:BB:CC:11:22:33, DD:EE:FF:44:55:66" style="margin-top:6px;padding:7px;border:1px solid #f59e0b;border-radius:5px;width:95%;max-width:480px;font-family:monospace;"></div>
+
+          <button type="button" onclick="tpSave()" style="background:#00a896;color:#fff;border:none;padding:10px 24px;border-radius:6px;font-weight:bold;cursor:pointer;font-size:14px;">Save & Connect</button>
+          <button type="button" onclick="tpToggle()" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;padding:9px 14px;border-radius:6px;font-weight:bold;cursor:pointer;margin-left:8px;font-size:12px;">Advanced</button></div>
+
           <script>
-          function importOVPN(el) {
-            var f = el.files[0];
-            if (!f) return;
-            var r = new FileReader();
-            r.onload = function(e) {
-              var t = e.target.result.replace(/\r\n/g, "\n");
-              function tag(n) {
-                var m = t.match(new RegExp("<" + n + ">([\\s\\S]*?)<\\/" + n + ">", "i"));
-                return (m && m[1]) ? m[1].trim() : "";
-              }
-              var ca = tag("ca");
-              var crt = tag("cert");
-              var key = tag("key");
-              var tls = tag("tls-auth") || tag("tls-crypt") || tag("tls-crypt-v2");
-              var crypt = /<tls-crypt/i.test(t);
-              var needUserPass = /^auth-user-pass/im.test(t);
-
-              var ls = t.replace(/<(ca|cert|key|tls-auth|tls-crypt|tls-crypt-v2|extra-certs|crl-verify)>[\s\S]*?<\/\1>/gi, "").split("\n");
-              var ex = [];
-              var h = "", p = "1194", pr = "0", comp = "0";
-
-              for (var i = 0; i < ls.length; i++) {
-                var l = ls[i].trim();
-                if (!l || l.startsWith("#") || l.startsWith(";")) continue;
-                if (/^(block-outside-dns|setenv|explicit-exit-notify|windows-driver|register-dns|auth-user-pass|client|dev\s|ca\s|cert\s|key\s|tls-auth\s|tls-crypt\s)/i.test(l)) continue;
-
-                if (/^remote\s+/i.test(l)) {
-                  var a = l.split(/\s+/);
-                  if (a[1]) h = a[1];
-                  if (a[2]) p = a[2];
-                  if (a[3] && /tcp/i.test(a[3])) pr = "1";
-                } else if (/^proto\s+/i.test(l)) {
-                  pr = /tcp/i.test(l) ? "1" : "0";
-                } else if (/^comp-lzo/i.test(l)) {
-                  comp = /no/i.test(l) ? "0" : "2";
-                } else if (/^compress/i.test(l)) {
-                  comp = /lz4/i.test(l) ? "3" : "1";
-                } else if (/^data-ciphers\s+/i.test(l)) {
-                  var c = l.replace(/^data-ciphers\s+/i, "").trim();
-                  ex.push("ncp-ciphers " + c);
-                  var firstC = c.split(":")[0];
-                  if (firstC) ex.push("cipher " + firstC);
-                } else if (!/^data-ciphers-fallback/i.test(l)) {
-                  ex.push(l);
-                }
-              }
-
-              if (!ex.some(function(x){ return /^auth-nocache/i.test(x); })) {
-                ex.push("auth-nocache");
-              }
-
-              var fm = document.form;
-              if (fm.vpnc_enable[0]) {
-                fm.vpnc_enable[0].checked = true;
-              } else {
-                fm.vpnc_enable.checked = true;
-              }
-              change_vpnc_enabled();
-
-              fm.vpnc_type.value = "2";
-              change_vpnc_type();
-
-              fm.vpnc_peer.value = h;
-              fm.vpnc_ov_port.value = p;
-              fm.vpnc_ov_prot.value = pr;
-              if (fm.vpnc_ov_compress) fm.vpnc_ov_compress.value = comp;
-              if (fm.vpnc_ov_auth) {
-                fm.vpnc_ov_auth.value = (needUserPass && !crt) ? "1" : "0";
-                change_vpnc_ov_auth();
-              }
-              fm.vpnc_ov_atls.value = tls ? (crypt ? "2" : "1") : "0";
-              change_vpnc_ov_atls();
-
-              fm["ovpncli.ca.crt"].value = ca;
-              fm["ovpncli.client.crt"].value = crt;
-              fm["ovpncli.client.key"].value = key;
-              fm["ovpncli.ta.key"].value = tls;
-              fm["ovpncli.client.conf"].value = ex.join("\n");
-
-              document.getElementById("ov_msg").innerText = "Loaded: " + h + ":" + p + (needUserPass ? " (Enter User/Pass below)" : " - Click Apply!");
+          function getProfiles(){try{return JSON.parse(localStorage.getItem("k2p_ovpn_profiles")||"[]");}catch(e){return [];}}
+          function saveProfiles(arr){localStorage.setItem("k2p_ovpn_profiles",JSON.stringify(arr));renderProfiles();}
+          function renderProfiles(){
+            var box=document.getElementById("tp_profiles_list"),arr=getProfiles();
+            if(!arr.length){box.innerHTML="<span style='font-size:12px;color:#94a3b8;'>No saved profiles yet. Click '+ Import .ovpn File' above.</span>";return;}
+            var h="";
+            for(var i=0;i<arr.length;i++){
+              var p=arr.slice(i,i+1).pop();
+              h+="<div style='display:flex;justify-content:space-between;align-items:center;padding:6px 8px;background:#fff;border:1px solid #cbd5e1;border-radius:5px;margin-bottom:5px;'>";
+              h+="<span style='font-size:13px;font-weight:bold;color:#0f172a;'>"+p.name+"</span>";
+              h+="<div><button type='button' onclick='selectProfile("+i+")' style='background:#0284c7;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;margin-right:5px;'>Select</button>";
+              h+="<button type='button' onclick='delProfile("+i+")' style='background:#ef4444;color:#fff;border:none;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;'>Delete</button></div></div>";
+            }
+            box.innerHTML=h;
+          }
+          function delProfile(idx){var arr=getProfiles();arr.splice(idx,1);saveProfiles(arr);}
+          function selectProfile(idx){
+            var arr=getProfiles();
+            if(idx<arr.length){
+              var item=arr.slice(idx,idx+1).pop();
+              applyOvpnText(item.content,item.name);
+            }
+          }
+          function addOvpnProfile(inp){
+            if(!inp.files||!inp.files.length)return;
+            var f=inp.files.item(0),r=new FileReader();
+            r.onload=function(e){
+              var txt=e.target.result,arr=getProfiles();
+              arr.push({name:f.name,content:txt});
+              saveProfiles(arr);
+              applyOvpnText(txt,f.name);
             };
             r.readAsText(f);
           }
-          </script>
-          EOF
-
-          awk '/<form method="post" name="form"/{system("cat /tmp/ovpn_ui.html")}1' "$VPN_FILE" > /tmp/vpncli_new.asp
-          mv -f /tmp/vpncli_new.asp "$VPN_FILE"
-          grep -q "importOVPN" "$VPN_FILE" && echo "SUCCESS: OVPN UI Injected!" || exit 1
-
-      - name: Build Firmware
-        run: |
-          cd "$GITHUB_WORKSPACE/rt-n56u/trunk"
-          ./clear_tree
-          ./build_firmware_modify K2P
-
-      - name: Upload Firmware Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: K2P-Padavan-Universal-OpenVPN
-          path: ${{ github.workspace }}/rt-n56u/trunk/images/*.trx
+          function tag(t,k){var a="<"+k+">",b="</"+k+">",s=t.indexOf(a),e=t.indexOf(b);return(s!==-1&&e>s)?t.substring(s+a.length,e).trim():"";}
+          function applyOvpnText(t,fname){
+            if(document.form.vpnc_type){document.form.vpnc_type.value="2";if(typeof change_vpnc_type==="function")change_vpnc_type();}
+            if(document.form.vpnc_enable)document.form.vpnc_enable.value="1";
+            var ls=t.split(/\\r?\\n/);
+            for(var i=0;i<ls.length;i++){
+              var l=ls.slice(i,i+1).pop().trim();
+              if(l.indexOf("remote ")===0){
+                var p=l.split(/\\s+/);
+                if(p.length>=2&&document.form.vpnc_peer){var sv=p.slice(1,2).pop();document.form.vpnc_peer.value=sv;document.getElementById("tp_srv").value=sv;}
+                if(p.length>=3&&document.form.vpnc_ov_port)document.form.vpnc_ov_port.value=p.slice(2,3).pop();
+              }else if(l.indexOf("proto ")===0&&document.form.vpnc_ov_prot){
+                document.form.vpnc_ov_prot.value=(l.split(/\\s+/).slice(1,2).pop().toLowerCase().indexOf("tcp")===0)?"1":"0";
+              }else if((l.indexOf("cipher ")===0||l.indexOf("data-ciphers ")===0)&&document.form.vpnc_ov_ciph){
+                document.form.vpnc_ov_ciph.value=l.split(/\\s+/).slice(1,2).pop().split(":").shift();
+              }
+            }
+            var ca=tag(t,"ca");if(ca&&document.form.ovpnc_ca_crt)document.form.ovpnc_ca_crt.value=ca;
+            var cr=tag(t,"cert");if(cr&&document.form.ovpnc_cli_crt)document.form.ovpnc_cli_crt.value=cr;
+            var ky=tag(t,"key");if(ky&&document.form.ovpnc_cli_key)document.form.ovpnc_cli_key.value=ky;
+            var tl=tag(t,"tls-auth")||tag(t,"tls-crypt");if(tl&&document.form.ovpnc_ta_key)document.form.ovpnc_ta_key.value=tl;
+            var au=tag(t,"auth-user-pass");
+            if(au){
+              var c=au.split(/\\r?\\n/);
+              if(c.length>=2){
+                var u=c.slice(0,1).pop().trim(),w=c.slice(1,2).pop().trim();
+                document.getElementById("tp_usr").value=u;document.getElementById("tp_pwd").value=w;
+                if(document.form.vpnc_user)document.form.vpnc_user.value=u;
+                if(document.form.vpnc_pass)document.form.vpnc_pass.value=w;
+              }
+            }
+            document.getElementById("tp_msg").innerText="Selected: "+fname+" (Click Save & Connect)";
+          }
+          function tpSave(){
+            var macs=document.getElementById("tp_macs").value.trim().toUpperCase();
+            localStorage.setItem("k2p_vpn_macs",macs);
+            if(document.form.vpnc_type)document.form.vpnc_type.value="2";
+            if(document.form.vpnc_enable)document.form.vpnc_enable.value="1";
+            var extra=document.form.vpnc_ov_conf || document.form.vpnc_ov_cnfg;
+            if(extra){
+              var base=extra.value.replace(/#MAC_ALLOW_START[\\s\\S]*?#MAC_ALLOW_END/g,"").trim();
+              if(macs){base+="\\n#MAC_ALLOW_START\\n#ALLOWED_MACS="+macs+"\\n#MAC_ALLOW_END";}
+              extra.value=base;
+            }
+            if(typeof applyRule==="function")applyRule();else document.form.submit();
+          }
+          function tpToggle(){var ts=document.getElementsByTagName("table");for(var i=0;i<ts.length;i++){var t=ts.item(i);if(t.innerHTML.indexOf("vpnc_peer")!==-1)t.style.display=(t.style.display==="none")?"":"none";}}
