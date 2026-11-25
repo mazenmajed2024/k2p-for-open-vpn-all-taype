@@ -22,24 +22,36 @@ jobs:
 
       - name: Clone Padavan Source & Toolchain
         run: |
-          git clone --depth=1 https://github.com /opt/rt-n56u
-          cd /opt/rt-n56u/toolchain-mipsel
+          REPOS=(
+            "https://github.com"
+            "https://github.com"
+            "https://github.com"
+            "https://gitlab.com"
+          )
+          for repo in "${REPOS[@]}"; do
+            echo "Trying $repo..."
+            if git clone --depth=1 "$repo" "$GITHUB_WORKSPACE/rt-n56u"; then
+              echo "Cloned successfully from $repo"
+              break
+            fi
+          done
+          [ -d "$GITHUB_WORKSPACE/rt-n56u" ] || exit 1
+          cd "$GITHUB_WORKSPACE/rt-n56u/toolchain-mipsel"
           ./dl_toolchain.sh
 
       - name: Configure K2P with Full OpenVPN Support
         run: |
-          cd /opt/rt-n56u/trunk
-          cp -f configs/templates/K2P.config .config
+          cd "$GITHUB_WORKSPACE/rt-n56u/trunk"
+          K2P_CFG=$(find configs/templates -iname "*K2P*.config" | head -n 1)
+          echo "Using template: $K2P_CFG"
+          cp -f "$K2P_CFG" .config
           sed -i 's/#CONFIG_FIRMWARE_INCLUDE_OPENVPN=y/CONFIG_FIRMWARE_INCLUDE_OPENVPN=y/g' .config
           grep -q "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" .config || echo "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" >> .config
           grep -q "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y" .config || echo "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y" >> .config
 
       - name: Inject Universal OVPN Importer into vpncli.asp
         run: |
-          VPN_FILE="/opt/rt-n56u/trunk/user/www/n56u_ribbon_fixed/vpncli.asp"
-          if [ ! -f "$VPN_FILE" ]; then
-            VPN_FILE=$(find /opt/rt-n56u/trunk/user/www -name "vpncli.asp" | head -n 1)
-          fi
+          VPN_FILE=$(find "$GITHUB_WORKSPACE/rt-n56u/trunk/user/www" -name "vpncli.asp" | head -n 1)
           echo "Target VPN File: $VPN_FILE"
 
           cat << 'EOF' > /tmp/ovpn_ui.html
@@ -141,7 +153,7 @@ jobs:
 
       - name: Build Firmware
         run: |
-          cd /opt/rt-n56u/trunk
+          cd "$GITHUB_WORKSPACE/rt-n56u/trunk"
           ./clear_tree
           ./build_firmware_modify K2P
 
@@ -149,4 +161,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: K2P-Padavan-Universal-OpenVPN
-          path: /opt/rt-n56u/trunk/images/*.trx
+          path: ${{ github.workspace }}/rt-n56u/trunk/images/*.trx
