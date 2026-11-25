@@ -1,0 +1,152 @@
+name: Build Padavan K2P Universal OpenVPN
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -y
+          sudo apt-get install -y unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
+            fakeroot kmod cpio git python3-docutils gettext automake autopoint \
+            texinfo build-essential help2man pkg-config zlib1g-dev libgmp3-dev \
+            libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc6:i386 libstdc++6:i386
+
+      - name: Clone Padavan Source & Toolchain
+        run: |
+          git clone --depth=1 https://github.com /opt/rt-n56u
+          cd /opt/rt-n56u/toolchain-mipsel
+          ./dl_toolchain.sh
+
+      - name: Configure K2P with Full OpenVPN Support
+        run: |
+          cd /opt/rt-n56u/trunk
+          cp -f configs/templates/K2P.config .config
+          sed -i 's/#CONFIG_FIRMWARE_INCLUDE_OPENVPN=y/CONFIG_FIRMWARE_INCLUDE_OPENVPN=y/g' .config
+          grep -q "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" .config || echo "CONFIG_FIRMWARE_INCLUDE_OPENVPN=y" >> .config
+          grep -q "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y" .config || echo "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y" >> .config
+
+      - name: Inject Universal OVPN Importer into vpncli.asp
+        run: |
+          VPN_FILE="/opt/rt-n56u/trunk/user/www/n56u_ribbon_fixed/vpncli.asp"
+          if [ ! -f "$VPN_FILE" ]; then
+            VPN_FILE=$(find /opt/rt-n56u/trunk/user/www -name "vpncli.asp" | head -n 1)
+          fi
+          echo "Target VPN File: $VPN_FILE"
+
+          cat << 'EOF' > /tmp/ovpn_ui.html
+          <div style="background:#f5f5f5;padding:12px;margin:10px 0;border:1px solid #ddd;border-radius:4px;">
+            <b>Import OpenVPN Profile (.ovpn - Modern & Legacy): </b>
+            <input type="file" accept=".ovpn,.conf" onchange="importOVPN(this)">
+            <span id="ov_msg" style="color:green;font-weight:bold;margin-left:10px;"></span>
+          </div>
+          <script>
+          function importOVPN(el) {
+            var f = el.files;
+            if (!f) return;
+            var r = new FileReader();
+            r.onload = function(e) {
+              var t = e.target.result.replace(/\r\n/g, "\n");
+              function tag(n) {
+                var m = t.match(new RegExp("<" + n + ">([\\s\\S]*?)<\\/" + n + ">", "i"));
+                return (m && m) ? m.trim() : "";
+              }
+              var ca = tag("ca");
+              var crt = tag("cert");
+              var key = tag("key");
+              var tls = tag("tls-auth") || tag("tls-crypt") || tag("tls-crypt-v2");
+              var crypt = /<tls-crypt/i.test(t);
+              var needUserPass = /^auth-user-pass/im.test(t);
+
+              var ls = t.replace(/<(ca|cert|key|tls-auth|tls-crypt|tls-crypt-v2|extra-certs|crl-verify)>[\s\S]*?<\/\1>/gi, "").split("\n");
+              var ex = [];
+              var h = "", p = "1194", pr = "0", comp = "0";
+
+              for (var i = 0; i < ls.length; i++) {
+                var l = ls[i].trim();
+                if (!l || l.startsWith("#") || l.startsWith(";")) continue;
+                if (/^(block-outside-dns|setenv|explicit-exit-notify|windows-driver|register-dns|auth-user-pass|client|dev\s|ca\s|cert\s|key\s|tls-auth\s|tls-crypt\s)/i.test(l)) continue;
+
+                if (/^remote\s+/i.test(l)) {
+                  var a = l.split(/\s+/);
+                  if (a) h = a;
+                  if (a) p = a;
+                  if (a && /tcp/i.test(a)) pr = "1";
+                } else if (/^proto\s+/i.test(l)) {
+                  pr = /tcp/i.test(l) ? "1" : "0";
+                } else if (/^comp-lzo/i.test(l)) {
+                  comp = /no/i.test(l) ? "0" : "2";
+                } else if (/^compress/i.test(l)) {
+                  comp = /lz4/i.test(l) ? "3" : "1";
+                } else if (/^data-ciphers\s+/i.test(l)) {
+                  var c = l.replace(/^data-ciphers\s+/i, "").trim();
+                  ex.push("ncp-ciphers " + c);
+                  var firstC = c.split(":");
+                  if (firstC) ex.push("cipher " + firstC);
+                } else if (!/^data-ciphers-fallback/i.test(l)) {
+                  ex.push(l);
+                }
+              }
+
+              if (!ex.some(function(x){ return /^auth-nocache/i.test(x); })) {
+                ex.push("auth-nocache");
+              }
+
+              var fm = document.form;
+              if (fm.vpnc_enable) {
+                fm.vpnc_enable.checked = true;
+              } else {
+                fm.vpnc_enable.checked = true;
+              }
+              change_vpnc_enabled();
+
+              fm.vpnc_type.value = "2";
+              change_vpnc_type();
+
+              fm.vpnc_peer.value = h;
+              fm.vpnc_ov_port.value = p;
+              fm.vpnc_ov_prot.value = pr;
+              if (fm.vpnc_ov_compress) fm.vpnc_ov_compress.value = comp;
+              if (fm.vpnc_ov_auth) {
+                fm.vpnc_ov_auth.value = (needUserPass && !crt) ? "1" : "0";
+                change_vpnc_ov_auth();
+              }
+              fm.vpnc_ov_atls.value = tls ? (crypt ? "2" : "1") : "0";
+              change_vpnc_ov_atls();
+
+              fm["ovpncli.ca.crt"].value = ca;
+              fm["ovpncli.client.crt"].value = crt;
+              fm["ovpncli.client.key"].value = key;
+              fm["ovpncli.ta.key"].value = tls;
+              fm["ovpncli.client.conf"].value = ex.join("\n");
+
+              document.getElementById("ov_msg").innerText = "Loaded: " + h + ":" + p + (needUserPass ? " (Enter User/Pass below)" : " - Click Apply!");
+            };
+            r.readAsText(f);
+          }
+          </script>
+          EOF
+
+          awk '/<form method="post" name="form"/{system("cat /tmp/ovpn_ui.html")}1' "$VPN_FILE" > /tmp/vpncli_new.asp
+          mv -f /tmp/vpncli_new.asp "$VPN_FILE"
+          grep -q "importOVPN" "$VPN_FILE" && echo "SUCCESS: OVPN UI Injected!" || exit 1
+
+      - name: Build Firmware
+        run: |
+          cd /opt/rt-n56u/trunk
+          ./clear_tree
+          ./build_firmware_modify K2P
+
+      - name: Upload Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: K2P-Padavan-Universal-OpenVPN
+          path: /opt/rt-n56u/trunk/images/*.trx
