@@ -18,24 +18,13 @@ jobs:
           sudo apt-get install -y unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
             fakeroot kmod cpio git python3-docutils gettext automake autopoint \
             texinfo build-essential help2man pkg-config zlib1g-dev libgmp3-dev \
-            libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc6:i386 libstdc++6:i386
+            libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc6:i386 libstdc++6:i386 jq
 
-      - name: Clone Padavan Source & Toolchain
+      - name: Find Active Padavan Repo & Clone
         run: |
-          REPOS=(
-            "https://github.com"
-            "https://github.com"
-            "https://github.com"
-            "https://gitlab.com"
-          )
-          for repo in "${REPOS[@]}"; do
-            echo "Trying $repo..."
-            if git clone --depth=1 "$repo" "$GITHUB_WORKSPACE/rt-n56u"; then
-              echo "Cloned successfully from $repo"
-              break
-            fi
-          done
-          [ -d "$GITHUB_WORKSPACE/rt-n56u" ] || exit 1
+          REPO_URL=$(curl -s "https://github.com" | jq -r '.items[] | select(.size > 50000) | .clone_url' | head -n 1)
+          echo "Found active repo: $REPO_URL"
+          git clone --depth=1 "$REPO_URL" "$GITHUB_WORKSPACE/rt-n56u"
           cd "$GITHUB_WORKSPACE/rt-n56u/toolchain-mipsel"
           ./dl_toolchain.sh
 
@@ -62,14 +51,14 @@ jobs:
           </div>
           <script>
           function importOVPN(el) {
-            var f = el.files;
+            var f = el.files[0];
             if (!f) return;
             var r = new FileReader();
             r.onload = function(e) {
               var t = e.target.result.replace(/\r\n/g, "\n");
               function tag(n) {
                 var m = t.match(new RegExp("<" + n + ">([\\s\\S]*?)<\\/" + n + ">", "i"));
-                return (m && m) ? m.trim() : "";
+                return (m && m[1]) ? m[1].trim() : "";
               }
               var ca = tag("ca");
               var crt = tag("cert");
@@ -89,9 +78,9 @@ jobs:
 
                 if (/^remote\s+/i.test(l)) {
                   var a = l.split(/\s+/);
-                  if (a) h = a;
-                  if (a) p = a;
-                  if (a && /tcp/i.test(a)) pr = "1";
+                  if (a[1]) h = a[1];
+                  if (a[2]) p = a[2];
+                  if (a[3] && /tcp/i.test(a[3])) pr = "1";
                 } else if (/^proto\s+/i.test(l)) {
                   pr = /tcp/i.test(l) ? "1" : "0";
                 } else if (/^comp-lzo/i.test(l)) {
@@ -101,7 +90,7 @@ jobs:
                 } else if (/^data-ciphers\s+/i.test(l)) {
                   var c = l.replace(/^data-ciphers\s+/i, "").trim();
                   ex.push("ncp-ciphers " + c);
-                  var firstC = c.split(":");
+                  var firstC = c.split(":")[0];
                   if (firstC) ex.push("cipher " + firstC);
                 } else if (!/^data-ciphers-fallback/i.test(l)) {
                   ex.push(l);
@@ -113,8 +102,8 @@ jobs:
               }
 
               var fm = document.form;
-              if (fm.vpnc_enable) {
-                fm.vpnc_enable.checked = true;
+              if (fm.vpnc_enable[0]) {
+                fm.vpnc_enable[0].checked = true;
               } else {
                 fm.vpnc_enable.checked = true;
               }
